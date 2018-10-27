@@ -29,8 +29,8 @@
 /*************************************************************************/
 
 #include "shader_language.h"
-#include "os/os.h"
-#include "print_string.h"
+#include "core/os/os.h"
+#include "core/print_string.h"
 static bool _is_text_char(CharType c) {
 
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
@@ -528,13 +528,14 @@ ShaderLanguage::Token ShaderLanguage::_get_token() {
 					bool hexa_found = false;
 					bool sign_found = false;
 					bool minus_exponent_found = false;
+					bool float_suffix_found = false;
 
 					String str;
 					int i = 0;
 
 					while (true) {
 						if (GETCHAR(i) == '.') {
-							if (period_found || exponent_found)
+							if (period_found || exponent_found || hexa_found || float_suffix_found)
 								return _make_token(TK_ERROR, "Invalid numeric constant");
 							period_found = true;
 						} else if (GETCHAR(i) == 'x') {
@@ -542,11 +543,16 @@ ShaderLanguage::Token ShaderLanguage::_get_token() {
 								return _make_token(TK_ERROR, "Invalid numeric constant");
 							hexa_found = true;
 						} else if (GETCHAR(i) == 'e') {
-							if (hexa_found || exponent_found)
+							if (hexa_found || exponent_found || float_suffix_found)
 								return _make_token(TK_ERROR, "Invalid numeric constant");
 							exponent_found = true;
+						} else if (GETCHAR(i) == 'f') {
+							if (hexa_found || exponent_found)
+								return _make_token(TK_ERROR, "Invalid numeric constant");
+							float_suffix_found = true;
 						} else if (_is_number(GETCHAR(i))) {
-							//all ok
+							if (float_suffix_found)
+								return _make_token(TK_ERROR, "Invalid numeric constant");
 						} else if (hexa_found && _is_hex(GETCHAR(i))) {
 
 						} else if ((GETCHAR(i) == '-' || GETCHAR(i) == '+') && exponent_found) {
@@ -562,21 +568,60 @@ ShaderLanguage::Token ShaderLanguage::_get_token() {
 						i++;
 					}
 
-					if (!_is_number(str[str.length() - 1]))
-						return _make_token(TK_ERROR, "Invalid numeric constant");
+					CharType last_char = str[str.length() - 1];
+
+					if (hexa_found) {
+						//hex integers eg."0xFF" or "0x12AB", etc - NOT supported yet
+						return _make_token(TK_ERROR, "Invalid (hexadecimal) numeric constant - Not supported");
+					} else if (period_found || float_suffix_found) {
+						//floats
+						if (period_found) {
+							if (float_suffix_found) {
+								//checks for eg "1.f" or "1.99f" notations
+								if (last_char != 'f') {
+									return _make_token(TK_ERROR, "Invalid (float) numeric constant");
+								}
+							} else {
+								//checks for eg. "1." or "1.99" notations
+								if (last_char != '.' && !_is_number(last_char)) {
+									return _make_token(TK_ERROR, "Invalid (float) numeric constant");
+								}
+							}
+						} else if (float_suffix_found) {
+							// if no period found the float suffix must be the last character, like in "2f" for "2.0"
+							if (last_char != 'f') {
+								return _make_token(TK_ERROR, "Invalid (float) numeric constant");
+							}
+						}
+
+						if (float_suffix_found) {
+							//strip the suffix
+							str = str.left(str.length() - 1);
+							//compensate reading cursor position
+							char_idx += 1;
+						}
+
+						if (!str.is_valid_float()) {
+							return _make_token(TK_ERROR, "Invalid (float) numeric constant");
+						}
+					} else {
+						//integers
+						if (!_is_number(last_char)) {
+							return _make_token(TK_ERROR, "Invalid (integer) numeric constant");
+						}
+						if (!str.is_valid_integer()) {
+							return _make_token(TK_ERROR, "Invalid numeric constant");
+						}
+					}
 
 					char_idx += str.length();
 					Token tk;
-					if (period_found || minus_exponent_found)
+					if (period_found || minus_exponent_found || float_suffix_found)
 						tk.type = TK_REAL_CONSTANT;
 					else
 						tk.type = TK_INT_CONSTANT;
 
-					if (!str.is_valid_float()) {
-						return _make_token(TK_ERROR, "Invalid numeric constant");
-					}
-
-					tk.constant = str.to_double();
+					tk.constant = str.to_double(); //wont work with hex
 					tk.line = tk_line;
 
 					return tk;
@@ -1577,33 +1622,51 @@ const ShaderLanguage::BuiltinFuncDef ShaderLanguage::builtin_func_defs[] = {
 
 	{ "min", TYPE_FLOAT, { TYPE_FLOAT, TYPE_FLOAT, TYPE_VOID } },
 	{ "min", TYPE_VEC2, { TYPE_VEC2, TYPE_VEC2, TYPE_VOID } },
+	{ "min", TYPE_VEC2, { TYPE_VEC2, TYPE_FLOAT, TYPE_VOID } },
 	{ "min", TYPE_VEC3, { TYPE_VEC3, TYPE_VEC3, TYPE_VOID } },
+	{ "min", TYPE_VEC3, { TYPE_VEC3, TYPE_FLOAT, TYPE_VOID } },
 	{ "min", TYPE_VEC4, { TYPE_VEC4, TYPE_VEC4, TYPE_VOID } },
+	{ "min", TYPE_VEC4, { TYPE_VEC4, TYPE_FLOAT, TYPE_VOID } },
 
 	{ "min", TYPE_INT, { TYPE_INT, TYPE_INT, TYPE_VOID } },
 	{ "min", TYPE_IVEC2, { TYPE_IVEC2, TYPE_IVEC2, TYPE_VOID } },
+	{ "min", TYPE_IVEC2, { TYPE_IVEC2, TYPE_INT, TYPE_VOID } },
 	{ "min", TYPE_IVEC3, { TYPE_IVEC3, TYPE_IVEC3, TYPE_VOID } },
+	{ "min", TYPE_IVEC3, { TYPE_IVEC3, TYPE_INT, TYPE_VOID } },
 	{ "min", TYPE_IVEC4, { TYPE_IVEC4, TYPE_IVEC4, TYPE_VOID } },
+	{ "min", TYPE_IVEC4, { TYPE_IVEC4, TYPE_INT, TYPE_VOID } },
 
 	{ "min", TYPE_UINT, { TYPE_UINT, TYPE_UINT, TYPE_VOID } },
 	{ "min", TYPE_UVEC2, { TYPE_UVEC2, TYPE_UVEC2, TYPE_VOID } },
+	{ "min", TYPE_UVEC2, { TYPE_UVEC2, TYPE_UINT, TYPE_VOID } },
 	{ "min", TYPE_UVEC3, { TYPE_UVEC3, TYPE_UVEC3, TYPE_VOID } },
+	{ "min", TYPE_UVEC3, { TYPE_UVEC3, TYPE_UINT, TYPE_VOID } },
 	{ "min", TYPE_UVEC4, { TYPE_UVEC4, TYPE_UVEC4, TYPE_VOID } },
+	{ "min", TYPE_UVEC4, { TYPE_UVEC4, TYPE_UINT, TYPE_VOID } },
 
 	{ "max", TYPE_FLOAT, { TYPE_FLOAT, TYPE_FLOAT, TYPE_VOID } },
 	{ "max", TYPE_VEC2, { TYPE_VEC2, TYPE_VEC2, TYPE_VOID } },
+	{ "max", TYPE_VEC2, { TYPE_VEC2, TYPE_FLOAT, TYPE_VOID } },
 	{ "max", TYPE_VEC3, { TYPE_VEC3, TYPE_VEC3, TYPE_VOID } },
+	{ "max", TYPE_VEC3, { TYPE_VEC3, TYPE_FLOAT, TYPE_VOID } },
 	{ "max", TYPE_VEC4, { TYPE_VEC4, TYPE_VEC4, TYPE_VOID } },
+	{ "max", TYPE_VEC4, { TYPE_VEC4, TYPE_FLOAT, TYPE_VOID } },
 
 	{ "max", TYPE_INT, { TYPE_INT, TYPE_INT, TYPE_VOID } },
 	{ "max", TYPE_IVEC2, { TYPE_IVEC2, TYPE_IVEC2, TYPE_VOID } },
+	{ "max", TYPE_IVEC2, { TYPE_IVEC2, TYPE_INT, TYPE_VOID } },
 	{ "max", TYPE_IVEC3, { TYPE_IVEC3, TYPE_IVEC3, TYPE_VOID } },
+	{ "max", TYPE_IVEC3, { TYPE_IVEC3, TYPE_INT, TYPE_VOID } },
 	{ "max", TYPE_IVEC4, { TYPE_IVEC4, TYPE_IVEC4, TYPE_VOID } },
+	{ "max", TYPE_IVEC4, { TYPE_IVEC4, TYPE_INT, TYPE_VOID } },
 
 	{ "max", TYPE_UINT, { TYPE_UINT, TYPE_UINT, TYPE_VOID } },
 	{ "max", TYPE_UVEC2, { TYPE_UVEC2, TYPE_UVEC2, TYPE_VOID } },
+	{ "max", TYPE_UVEC2, { TYPE_UVEC2, TYPE_UINT, TYPE_VOID } },
 	{ "max", TYPE_UVEC3, { TYPE_UVEC3, TYPE_UVEC3, TYPE_VOID } },
+	{ "max", TYPE_UVEC3, { TYPE_UVEC3, TYPE_UINT, TYPE_VOID } },
 	{ "max", TYPE_UVEC4, { TYPE_UVEC4, TYPE_UVEC4, TYPE_VOID } },
+	{ "max", TYPE_UVEC4, { TYPE_UVEC4, TYPE_UINT, TYPE_VOID } },
 
 	{ "clamp", TYPE_FLOAT, { TYPE_FLOAT, TYPE_FLOAT, TYPE_FLOAT, TYPE_VOID } },
 	{ "clamp", TYPE_VEC2, { TYPE_VEC2, TYPE_VEC2, TYPE_VEC2, TYPE_VOID } },
@@ -1960,10 +2023,7 @@ bool ShaderLanguage::_validate_function_call(BlockNode *p_block, OperatorNode *p
 
 	StringName name = static_cast<VariableNode *>(p_func->arguments[0])->name.operator String();
 
-	bool all_const = true;
 	for (int i = 1; i < p_func->arguments.size(); i++) {
-		if (p_func->arguments[i]->type != Node::TYPE_CONSTANT)
-			all_const = false;
 		args.push_back(p_func->arguments[i]->get_datatype());
 	}
 
@@ -2228,6 +2288,105 @@ bool ShaderLanguage::is_sampler_type(DataType p_type) {
 		   p_type == TYPE_SAMPLERCUBE;
 }
 
+Variant ShaderLanguage::constant_value_to_variant(const Vector<ShaderLanguage::ConstantNode::Value> &p_value, DataType p_type) {
+	if (p_value.size() > 0) {
+		Variant value;
+		switch (p_type) {
+			case ShaderLanguage::TYPE_BOOL:
+				value = Variant(p_value[0].boolean);
+				break;
+			case ShaderLanguage::TYPE_BVEC2:
+			case ShaderLanguage::TYPE_BVEC3:
+			case ShaderLanguage::TYPE_BVEC4:
+			case ShaderLanguage::TYPE_INT:
+				value = Variant(p_value[0].sint);
+				break;
+			case ShaderLanguage::TYPE_IVEC2:
+				value = Variant(Vector2(p_value[0].sint, p_value[1].sint));
+				break;
+			case ShaderLanguage::TYPE_IVEC3:
+				value = Variant(Vector3(p_value[0].sint, p_value[1].sint, p_value[2].sint));
+				break;
+			case ShaderLanguage::TYPE_IVEC4:
+				value = Variant(Plane(p_value[0].sint, p_value[1].sint, p_value[2].sint, p_value[3].sint));
+				break;
+			case ShaderLanguage::TYPE_UINT:
+				value = Variant(p_value[0].uint);
+				break;
+			case ShaderLanguage::TYPE_UVEC2:
+				value = Variant(Vector2(p_value[0].uint, p_value[1].uint));
+				break;
+			case ShaderLanguage::TYPE_UVEC3:
+				value = Variant(Vector3(p_value[0].uint, p_value[1].uint, p_value[2].uint));
+				break;
+			case ShaderLanguage::TYPE_UVEC4:
+				value = Variant(Plane(p_value[0].uint, p_value[1].uint, p_value[2].uint, p_value[3].uint));
+				break;
+			case ShaderLanguage::TYPE_FLOAT:
+				value = Variant(p_value[0].real);
+				break;
+			case ShaderLanguage::TYPE_VEC2:
+				value = Variant(Vector2(p_value[0].real, p_value[1].real));
+				break;
+			case ShaderLanguage::TYPE_VEC3:
+				value = Variant(Vector3(p_value[0].real, p_value[1].real, p_value[2].real));
+				break;
+			case ShaderLanguage::TYPE_VEC4:
+				value = Variant(Plane(p_value[0].real, p_value[1].real, p_value[2].real, p_value[3].real));
+				break;
+			case ShaderLanguage::TYPE_MAT2:
+				value = Variant(Transform2D(p_value[0].real, p_value[2].real, p_value[1].real, p_value[3].real, 0.0, 0.0));
+				break;
+			case ShaderLanguage::TYPE_MAT3: {
+				Basis p;
+				p[0][0] = p_value[0].real;
+				p[0][1] = p_value[1].real;
+				p[0][2] = p_value[2].real;
+				p[1][0] = p_value[3].real;
+				p[1][1] = p_value[4].real;
+				p[1][2] = p_value[5].real;
+				p[2][0] = p_value[6].real;
+				p[2][1] = p_value[7].real;
+				p[2][2] = p_value[8].real;
+				value = Variant(p);
+				break;
+			}
+			case ShaderLanguage::TYPE_MAT4: {
+				Basis p;
+				p[0][0] = p_value[0].real;
+				p[0][1] = p_value[1].real;
+				p[0][2] = p_value[2].real;
+				p[1][0] = p_value[4].real;
+				p[1][1] = p_value[5].real;
+				p[1][2] = p_value[6].real;
+				p[2][0] = p_value[8].real;
+				p[2][1] = p_value[9].real;
+				p[2][2] = p_value[10].real;
+				Transform t = Transform(p, Vector3(p_value[3].real, p_value[7].real, p_value[11].real));
+				value = Variant(t);
+				break;
+			}
+			case ShaderLanguage::TYPE_ISAMPLER2DARRAY:
+			case ShaderLanguage::TYPE_ISAMPLER2D:
+			case ShaderLanguage::TYPE_ISAMPLER3D:
+			case ShaderLanguage::TYPE_SAMPLER2DARRAY:
+			case ShaderLanguage::TYPE_SAMPLER2D:
+			case ShaderLanguage::TYPE_SAMPLER3D:
+			case ShaderLanguage::TYPE_USAMPLER2DARRAY:
+			case ShaderLanguage::TYPE_USAMPLER2D:
+			case ShaderLanguage::TYPE_USAMPLER3D:
+			case ShaderLanguage::TYPE_SAMPLERCUBE: {
+				// Texture types, likely not relevant here.
+				break;
+			}
+			case ShaderLanguage::TYPE_VOID:
+				break;
+		}
+		return value;
+	}
+	return Variant();
+}
+
 void ShaderLanguage::get_keyword_list(List<String> *r_keywords) {
 
 	Set<String> kws;
@@ -2323,9 +2482,9 @@ int ShaderLanguage::get_cardinality(DataType p_type) {
 		2,
 		3,
 		4,
-		2,
-		3,
 		4,
+		9,
+		16,
 		1,
 		1,
 		1,
@@ -2339,7 +2498,7 @@ bool ShaderLanguage::_get_completable_identifier(BlockNode *p_block, CompletionT
 
 	identifier = StringName();
 
-	TkPos pos;
+	TkPos pos = { 0, 0 };
 
 	Token tk = _get_token();
 
@@ -2488,7 +2647,6 @@ ShaderLanguage::Node *ShaderLanguage::_parse_expression(BlockNode *p_block, cons
 			expr = constant;
 
 		} else if (tk.type == TK_TRUE) {
-			//print_line("found true");
 
 			//handle true constant
 			ConstantNode *constant = alloc_node<ConstantNode>();
@@ -2862,6 +3020,7 @@ ShaderLanguage::Node *ShaderLanguage::_parse_expression(BlockNode *p_block, cons
 							case TYPE_IVEC2: member_type = TYPE_INT; break;
 							case TYPE_UVEC2: member_type = TYPE_UINT; break;
 							case TYPE_MAT2: member_type = TYPE_VEC2; break;
+							default: break;
 						}
 
 						break;
@@ -2887,6 +3046,7 @@ ShaderLanguage::Node *ShaderLanguage::_parse_expression(BlockNode *p_block, cons
 							case TYPE_IVEC3: member_type = TYPE_INT; break;
 							case TYPE_UVEC3: member_type = TYPE_UINT; break;
 							case TYPE_MAT3: member_type = TYPE_VEC3; break;
+							default: break;
 						}
 						break;
 					case TYPE_BVEC4:
@@ -2911,6 +3071,7 @@ ShaderLanguage::Node *ShaderLanguage::_parse_expression(BlockNode *p_block, cons
 							case TYPE_IVEC4: member_type = TYPE_INT; break;
 							case TYPE_UVEC4: member_type = TYPE_UINT; break;
 							case TYPE_MAT4: member_type = TYPE_VEC4; break;
+							default: break;
 						}
 						break;
 					default: {
@@ -3263,7 +3424,9 @@ ShaderLanguage::Node *ShaderLanguage::_reduce_expression(BlockNode *p_block, Sha
 
 		ERR_FAIL_COND_V(op->arguments[0]->type != Node::TYPE_VARIABLE, p_node);
 
-		DataType base = get_scalar_type(op->get_datatype());
+		DataType type = op->get_datatype();
+		DataType base = get_scalar_type(type);
+		int cardinality = get_cardinality(type);
 
 		Vector<ConstantNode::Value> values;
 
@@ -3274,19 +3437,9 @@ ShaderLanguage::Node *ShaderLanguage::_reduce_expression(BlockNode *p_block, Sha
 				ConstantNode *cn = static_cast<ConstantNode *>(op->arguments[i]);
 
 				if (get_scalar_type(cn->datatype) == base) {
-
-					int cardinality = get_cardinality(op->arguments[i]->get_datatype());
-					if (cn->values.size() == cardinality) {
-
-						for (int j = 0; j < cn->values.size(); j++) {
-							values.push_back(cn->values[j]);
-						}
-					} else if (cn->values.size() == 1) {
-
-						for (int j = 0; j < cardinality; j++) {
-							values.push_back(cn->values[0]);
-						}
-					} // else: should be filtered by the parser as it's an invalid constructor
+					for (int j = 0; j < cn->values.size(); j++) {
+						values.push_back(cn->values[j]);
+					}
 				} else if (get_scalar_type(cn->datatype) == cn->datatype) {
 
 					ConstantNode::Value v;
@@ -3301,6 +3454,30 @@ ShaderLanguage::Node *ShaderLanguage::_reduce_expression(BlockNode *p_block, Sha
 			} else {
 				return p_node;
 			}
+		}
+
+		if (values.size() == 1) {
+			if (type >= TYPE_MAT2 && type <= TYPE_MAT4) {
+				ConstantNode::Value value = values[0];
+				ConstantNode::Value zero;
+				zero.real = 0.0f;
+				int size = 2 + (type - TYPE_MAT2);
+
+				values.clear();
+				for (int i = 0; i < size; i++) {
+					for (int j = 0; j < size; j++) {
+						values.push_back(i == j ? value : zero);
+					}
+				}
+			} else {
+				ConstantNode::Value value = values[0];
+				for (int i = 1; i < cardinality; i++) {
+					values.push_back(value);
+				}
+			}
+		} else if (values.size() != cardinality) {
+			ERR_PRINT("Failed to reduce expression, values and cardinality mismatch.");
+			return p_node;
 		}
 
 		ConstantNode *cn = alloc_node<ConstantNode>();
@@ -3329,6 +3506,7 @@ ShaderLanguage::Node *ShaderLanguage::_reduce_expression(BlockNode *p_block, Sha
 						nv.sint = -cn->values[i].sint;
 					} break;
 					case TYPE_UINT: {
+						// FIXME: This can't work on uint
 						nv.uint = -cn->values[i].uint;
 					} break;
 					case TYPE_FLOAT: {
@@ -3830,8 +4008,8 @@ Error ShaderLanguage::_parse_shader(const Map<StringName, FunctionInfo> &p_funct
 					return ERR_PARSE_ERROR;
 				}
 
-				if (!uniform && (type < TYPE_FLOAT || type > TYPE_VEC4)) {
-					_set_error("Invalid type for varying, only float,vec2,vec3,vec4 allowed.");
+				if (!uniform && (type < TYPE_FLOAT || type > TYPE_MAT4)) {
+					_set_error("Invalid type for varying, only float,vec2,vec3,vec4,mat2,mat3,mat4 allowed.");
 					return ERR_PARSE_ERROR;
 				}
 

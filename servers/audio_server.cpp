@@ -29,10 +29,11 @@
 /*************************************************************************/
 
 #include "audio_server.h"
-#include "io/resource_loader.h"
-#include "os/file_access.h"
-#include "os/os.h"
-#include "project_settings.h"
+#include "core/io/resource_loader.h"
+#include "core/os/file_access.h"
+#include "core/os/os.h"
+#include "core/project_settings.h"
+#include "scene/resources/audio_stream_sample.h"
 #include "servers/audio/audio_driver_dummy.h"
 #include "servers/audio/effects/audio_effect_compressor.h"
 #ifdef TOOLS_ENABLED
@@ -79,6 +80,25 @@ double AudioDriver::get_mix_time() const {
 	return total;
 }
 
+void AudioDriver::input_buffer_init(int driver_buffer_frames) {
+
+	const int input_buffer_channels = 2;
+	input_buffer.resize(driver_buffer_frames * input_buffer_channels * 4);
+	input_position = 0;
+	input_size = 0;
+}
+
+void AudioDriver::input_buffer_write(int32_t sample) {
+
+	input_buffer.write[input_position++] = sample;
+	if (input_position >= input_buffer.size()) {
+		input_position = 0;
+	}
+	if (input_size < input_buffer.size()) {
+		input_size++;
+	}
+}
+
 AudioDriver::SpeakerMode AudioDriver::get_speaker_mode_by_total_channels(int p_channels) const {
 	switch (p_channels) {
 		case 4: return SPEAKER_SURROUND_31;
@@ -113,6 +133,14 @@ String AudioDriver::get_device() {
 	return "Default";
 }
 
+Array AudioDriver::capture_get_device_list() {
+	Array list;
+
+	list.push_back("Default");
+
+	return list;
+}
+
 AudioDriver::AudioDriver() {
 
 	_last_mix_time = 0;
@@ -123,14 +151,19 @@ AudioDriver::AudioDriver() {
 #endif
 }
 
-AudioDriver *AudioDriverManager::drivers[MAX_DRIVERS];
-int AudioDriverManager::driver_count = 0;
 AudioDriverDummy AudioDriverManager::dummy_driver;
+AudioDriver *AudioDriverManager::drivers[MAX_DRIVERS] = {
+	&AudioDriverManager::dummy_driver,
+};
+int AudioDriverManager::driver_count = 1;
 
 void AudioDriverManager::add_driver(AudioDriver *p_driver) {
 
 	ERR_FAIL_COND(driver_count >= MAX_DRIVERS);
-	drivers[driver_count++] = p_driver;
+	drivers[driver_count - 1] = p_driver;
+
+	// Last driver is always our dummy driver
+	drivers[driver_count++] = &AudioDriverManager::dummy_driver;
 }
 
 int AudioDriverManager::get_driver_count() {
@@ -160,16 +193,12 @@ void AudioDriverManager::initialize(int p_driver) {
 
 		if (drivers[i]->init() == OK) {
 			drivers[i]->set_singleton();
-			return;
+			break;
 		}
 	}
 
-	// Fallback to our dummy driver
-	if (dummy_driver.init() == OK) {
-		ERR_PRINT("AudioDriverManager: all drivers failed, falling back to dummy driver");
-		dummy_driver.set_singleton();
-	} else {
-		ERR_PRINT("AudioDriverManager: dummy driver failed to init()");
+	if (driver_count > 1 && String(AudioDriver::get_singleton()->get_name()) == "Dummy") {
+		WARN_PRINT("All audio drivers failed, falling back to the dummy driver.");
 	}
 }
 
@@ -905,6 +934,7 @@ void AudioServer::init() {
 
 	channel_disable_threshold_db = GLOBAL_DEF_RST("audio/channel_disable_threshold_db", -60.0);
 	channel_disable_frames = float(GLOBAL_DEF_RST("audio/channel_disable_time", 2.0)) * get_mix_rate();
+	ProjectSettings::get_singleton()->set_custom_property_info("audio/channel_disable_time", PropertyInfo(Variant::REAL, "audio/channel_disable_time", PROPERTY_HINT_RANGE, "0,5,0.01,or_greater"));
 	buffer_size = 1024; //hardcoded for now
 
 	init_channels_and_buffers();
@@ -1201,6 +1231,21 @@ void AudioServer::set_device(String device) {
 	AudioDriver::get_singleton()->set_device(device);
 }
 
+Array AudioServer::capture_get_device_list() {
+
+	return AudioDriver::get_singleton()->capture_get_device_list();
+}
+
+String AudioServer::capture_get_device() {
+
+	return AudioDriver::get_singleton()->capture_get_device();
+}
+
+void AudioServer::capture_set_device(const String &p_name) {
+
+	AudioDriver::get_singleton()->capture_set_device(p_name);
+}
+
 void AudioServer::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("set_bus_count", "amount"), &AudioServer::set_bus_count);
@@ -1249,7 +1294,11 @@ void AudioServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_mix_rate"), &AudioServer::get_mix_rate);
 	ClassDB::bind_method(D_METHOD("get_device_list"), &AudioServer::get_device_list);
 	ClassDB::bind_method(D_METHOD("get_device"), &AudioServer::get_device);
-	ClassDB::bind_method(D_METHOD("set_device"), &AudioServer::set_device);
+	ClassDB::bind_method(D_METHOD("set_device", "device"), &AudioServer::set_device);
+
+	ClassDB::bind_method(D_METHOD("capture_get_device_list"), &AudioServer::capture_get_device_list);
+	ClassDB::bind_method(D_METHOD("capture_get_device"), &AudioServer::capture_get_device);
+	ClassDB::bind_method(D_METHOD("capture_set_device", "name"), &AudioServer::capture_set_device);
 
 	ClassDB::bind_method(D_METHOD("set_bus_layout", "bus_layout"), &AudioServer::set_bus_layout);
 	ClassDB::bind_method(D_METHOD("generate_bus_layout"), &AudioServer::generate_bus_layout);
@@ -1257,6 +1306,7 @@ void AudioServer::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("bus_layout_changed"));
 
 	BIND_ENUM_CONSTANT(SPEAKER_MODE_STEREO);
+	BIND_ENUM_CONSTANT(SPEAKER_SURROUND_31);
 	BIND_ENUM_CONSTANT(SPEAKER_SURROUND_51);
 	BIND_ENUM_CONSTANT(SPEAKER_SURROUND_71);
 }
